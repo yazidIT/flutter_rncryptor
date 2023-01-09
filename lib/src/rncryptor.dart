@@ -126,10 +126,9 @@ class RNCryptor {
 
   /// Generates a 32 byte length key by using the specified password and a password salt.
   static Uint8List generateKey(String password, Uint8List salt) {
-    var rncryptorSettings = RNCryptorSettings(pbkdf2Iterations: 100);
     var passwordBytes = Uint8List.fromList(password.codeUnits);
     var params = Pbkdf2Parameters(
-        salt, rncryptorSettings.pbkdf2Iterations, RNCryptorSettings.keyLength);
+        salt, RNCryptorSettings.pbkdf2Iterations, RNCryptorSettings.keyLength);
     var keyDerivator = PBKDF2KeyDerivator(HMac(SHA1Digest(), 64));
     keyDerivator.init(params);
     return keyDerivator.process(passwordBytes);
