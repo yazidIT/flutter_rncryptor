@@ -9,6 +9,16 @@ import 'rncryptor_components.dart';
 
 /// A high-level AES encryptor/decryptor engine compatible with RNCryptor
 class RNCryptor {
+
+  static late RNCryptorSettings settings;
+  int iteration;
+
+  RNCryptor(this.iteration);
+
+  init() {
+    settings = RNCryptorSettings(pbkdf2Iterations: iteration);
+  }
+
   /// Encrypts plain text by using the specified password.
   static String encrypt(String password, String plainText) {
     final encryptionSalt = generateSalt();
@@ -126,10 +136,10 @@ class RNCryptor {
 
   /// Generates a 32 byte length key by using the specified password and a password salt.
   static Uint8List generateKey(String password, Uint8List salt) {
-    var rncryptorSettings = RNCryptorSettings(pbkdf2Iterations: 100);
+
     var passwordBytes = Uint8List.fromList(password.codeUnits);
     var params = Pbkdf2Parameters(
-        salt, rncryptorSettings.pbkdf2Iterations, RNCryptorSettings.keyLength);
+        salt, settings.pbkdf2Iterations, RNCryptorSettings.keyLength);
     var keyDerivator = PBKDF2KeyDerivator(HMac(SHA1Digest(), 64));
     keyDerivator.init(params);
     return keyDerivator.process(passwordBytes);
