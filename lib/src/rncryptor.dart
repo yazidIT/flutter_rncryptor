@@ -62,6 +62,42 @@ class RNCryptor {
     return cipherText;
   }
 
+  /// Byte as input instead of String
+  static Uint8List encryptData(String password, Uint8List plainData) {
+    final encryptionSalt = generateSalt();
+    final hmacSalt = generateSalt();
+    final iv = _generateIv(RNCryptorSettings.ivLength);
+
+    final encryptionKey = generateKey(password, encryptionSalt);
+    final hmacKey = generateKey(password, hmacSalt);
+    final cipherData = _encryptCoreData(encryptionKey, iv, plainData)!;
+
+    var data = BytesBuilder();
+    data.add([RNCryptorSettings.version]);
+    data.add([1]);
+    data.add(encryptionSalt);
+    data.add(hmacSalt);
+    data.add(iv);
+    data.add(cipherData);
+
+    final hmac = _generateHmac(data.toBytes(), hmacKey);
+    data.add(hmac);
+
+    return data.toBytes();
+  }
+
+  static Uint8List? _encryptCoreData(
+      Uint8List encryptionKey, Uint8List iv, Uint8List plainData) {
+    final cipher = CBCBlockCipher(AESEngine());
+    final params = ParametersWithIV(KeyParameter(encryptionKey), iv);
+
+    final paddingParams = PaddedBlockCipherParameters<ParametersWithIV<KeyParameter>, Null>(params, null);
+    final paddedCipher = PaddedBlockCipherImpl(PKCS7Padding(), cipher);
+
+    paddedCipher.init(true, paddingParams);
+    return paddedCipher.process(plainData);
+  }
+
   /// Encrypts the input text by using the specified password.
   static String? decrypt(String password, String b64str,
       {bool checkHmac = true}) {
@@ -119,6 +155,47 @@ class RNCryptor {
       cipher.init(false, ParametersWithIV(KeyParameter(key), iv));
       final decrypted = _processBlocks(cipher, encrypted);
       return _stripPkcs7Padding(decrypted);
+    } catch (e) {
+      return null;
+    }
+  }
+
+  /// Decrypt the input data by using the specified password.
+  static Uint8List? decryptData(String password, Uint8List cipherData,
+      {bool checkHmac = true}) {
+
+    final components = RNCryptorComponents.fromBuffer(cipherData);
+    if (components == null || components.header.options != 1) {
+      return null;
+    }
+    if (checkHmac) {
+      var hmacKey = generateKey(password, components.header.hmacSalt!);
+      var hmacData =
+      cipherData.sublist(0, cipherData.length - RNCryptorSettings.hmacLength);
+      var hmac = _generateHmac(hmacData, hmacKey);
+      if (!ListEquality().equals(components.hmac, hmac)) {
+        return null;
+      }
+    }
+    try {
+      final key = generateKey(password, components.header.encryptionSalt!);
+      return _decryptCoreData(key, components.header.iv, components.cipherText);
+    } catch (e) {
+      return null;
+    }
+  }
+
+  static Uint8List? _decryptCoreData(
+      Uint8List key, Uint8List iv, Uint8List encrypted) {
+    try {
+      final cipher = CBCBlockCipher(AESEngine());
+      final params = ParametersWithIV(KeyParameter(key), iv);
+
+      final paddingParams = PaddedBlockCipherParameters<ParametersWithIV<KeyParameter>, Null>(params, null);
+      final paddedCipher = PaddedBlockCipherImpl(PKCS7Padding(), cipher);
+
+      paddedCipher.init(false, paddingParams);
+      return paddedCipher.process(encrypted);
     } catch (e) {
       return null;
     }
