@@ -9,6 +9,7 @@ import 'rncryptor_components.dart';
 
 /// A high-level AES encryptor/decryptor engine compatible with RNCryptor
 class RNCryptor {
+
   /// Encrypts plain text by using the specified password.
   static String encrypt(String password, String plainText) {
     final encryptionSalt = generateSalt();
@@ -17,7 +18,8 @@ class RNCryptor {
 
     final encryptionKey = generateKey(password, encryptionSalt);
     final hmacKey = generateKey(password, hmacSalt);
-    final cipherText = _encryptCore(encryptionKey, iv, plainText)!;
+    final plainData = Uint8List.fromList(plainText.codeUnits);
+    final cipherText = _encryptCoreData(encryptionKey, iv, plainData)!;
 
     var data = BytesBuilder();
     data.add([RNCryptorSettings.version]);
@@ -61,7 +63,8 @@ class RNCryptor {
   static String encryptWithKey(
       Uint8List encryptionKey, Uint8List hmacKey, String plainText) {
     final iv = _generateIv(RNCryptorSettings.ivLength);
-    final cipherText = _encryptCore(encryptionKey, iv, plainText)!;
+    final plainData = Uint8List.fromList(plainText.codeUnits);
+    final cipherText = _encryptCoreData(encryptionKey, iv, plainData)!;
 
     var data = BytesBuilder();
     data.add([RNCryptorSettings.version]);
@@ -75,15 +78,40 @@ class RNCryptor {
     return base64.encode(data.toBytes());
   }
 
-  static Uint8List? _encryptCore(
-      Uint8List encryptionKey, Uint8List iv, String plainText) {
-    final paddedPlainText = _addPkcs7Padding(plainText, iv.length);
+  /// Byte as input instead of String
+  static Uint8List encryptData(String password, Uint8List plainData) {
+    final encryptionSalt = generateSalt();
+    final hmacSalt = generateSalt();
+    final iv = _generateIv(RNCryptorSettings.ivLength);
+
+    final encryptionKey = generateKey(password, encryptionSalt);
+    final hmacKey = generateKey(password, hmacSalt);
+    final cipherData = _encryptCoreData(encryptionKey, iv, plainData)!;
+
+    var data = BytesBuilder();
+    data.add([RNCryptorSettings.version]);
+    data.add([1]);
+    data.add(encryptionSalt);
+    data.add(hmacSalt);
+    data.add(iv);
+    data.add(cipherData);
+
+    final hmac = _generateHmac(data.toBytes(), hmacKey);
+    data.add(hmac);
+
+    return data.toBytes();
+  }
+
+  static Uint8List? _encryptCoreData(
+      Uint8List encryptionKey, Uint8List iv, Uint8List plainData) {
     final cipher = CBCBlockCipher(AESEngine());
     final params = ParametersWithIV(KeyParameter(encryptionKey), iv);
-    cipher.init(true, params);
-    final textBytes = Uint8List.fromList(paddedPlainText.codeUnits);
-    final cipherText = _processBlocks(cipher, textBytes);
-    return cipherText;
+
+    final paddingParams = PaddedBlockCipherParameters<ParametersWithIV<KeyParameter>, Null>(params, null);
+    final paddedCipher = PaddedBlockCipherImpl(PKCS7Padding(), cipher);
+
+    paddedCipher.init(true, paddingParams);
+    return paddedCipher.process(plainData);
   }
 
   static Uint8List? _encryptCoreData(
@@ -133,7 +161,11 @@ class RNCryptor {
     }
     try {
       final key = generateKey(password, components.header.encryptionSalt!);
-      return _decryptCore(key, components.header.iv, components.cipherText);
+      final plainData = _decryptCoreData(key, components.header.iv, components.cipherText);
+      if(plainData == null) {
+        return null;
+      }
+      return String.fromCharCodes(plainData.toList());
     } catch (e) {
       return null;
     }
@@ -182,20 +214,54 @@ class RNCryptor {
       }
     }
     try {
-      return _decryptCore(
+      final plainData = _decryptCoreData(
           encryptionKey, components.header.iv, components.cipherText);
+      if(plainData == null) {
+        return null;
+      }
+      return String.fromCharCodes(plainData.toList());
     } catch (e) {
       return null;
     }
   }
 
-  static String? _decryptCore(
+  /// Decrypt the input data by using the specified password.
+  static Uint8List? decryptData(String password, Uint8List cipherData,
+      {bool checkHmac = true}) {
+
+    final components = RNCryptorComponents.fromBuffer(cipherData);
+    if (components == null || components.header.options != 1) {
+      return null;
+    }
+    if (checkHmac) {
+      var hmacKey = generateKey(password, components.header.hmacSalt!);
+      var hmacData =
+      cipherData.sublist(0, cipherData.length - RNCryptorSettings.hmacLength);
+      var hmac = _generateHmac(hmacData, hmacKey);
+      if (!ListEquality().equals(components.hmac, hmac)) {
+        return null;
+      }
+    }
+    try {
+      final key = generateKey(password, components.header.encryptionSalt!);
+      return _decryptCoreData(key, components.header.iv, components.cipherText);
+    } catch (e) {
+      return null;
+    }
+  }
+
+  static Uint8List? _decryptCoreData(
       Uint8List key, Uint8List iv, Uint8List encrypted) {
     try {
       final cipher = CBCBlockCipher(AESEngine());
-      cipher.init(false, ParametersWithIV(KeyParameter(key), iv));
-      final decrypted = _processBlocks(cipher, encrypted);
-      return _stripPkcs7Padding(decrypted);
+      final params = ParametersWithIV(KeyParameter(key), iv);
+
+      final paddingParams =
+            PaddedBlockCipherParameters<ParametersWithIV<KeyParameter>, Null>(params, null);
+      final paddedCipher = PaddedBlockCipherImpl(PKCS7Padding(), cipher);
+
+      paddedCipher.init(false, paddingParams);
+      return paddedCipher.process(encrypted);
     } catch (e) {
       return null;
     }
@@ -229,24 +295,5 @@ class RNCryptor {
     var hmac = HMac(SHA256Digest(), 64);
     hmac.init(KeyParameter(hmacKey));
     return hmac.process(data);
-  }
-
-  static Uint8List _processBlocks(BlockCipher cipher, Uint8List inp) {
-    var out = Uint8List(inp.lengthInBytes);
-    for (var offset = 0; offset < inp.lengthInBytes;) {
-      var len = cipher.processBlock(inp, offset, out, offset);
-      offset += len;
-    }
-    return out;
-  }
-
-  static String _stripPkcs7Padding(Uint8List plainText) {
-    var padLength = plainText[plainText.length - 1];
-    return utf8.decode(plainText.sublist(0, plainText.length - padLength));
-  }
-
-  static String _addPkcs7Padding(String plainText, int blockSize) {
-    var padSize = blockSize - (plainText.length % blockSize);
-    return plainText + ''.padRight(padSize - 1) + String.fromCharCode(padSize);
   }
 }
